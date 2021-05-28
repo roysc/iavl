@@ -11,6 +11,7 @@ import (
 
 	"github.com/pkg/errors"
 	dbm "github.com/tendermint/tm-db"
+	"github.com/tendermint/tm-db/goleveldb"
 )
 
 const (
@@ -135,7 +136,7 @@ func (ndb *nodeDB) SaveNode(node *Node) {
 func (ndb *nodeDB) Has(hash []byte) (bool, error) {
 	key := ndb.nodeKey(hash)
 
-	if ldb, ok := ndb.db.(*dbm.GoLevelDB); ok {
+	if ldb, ok := ndb.db.(*goleveldb.GoLevelDB); ok {
 		exists, err := ldb.DB().Has(key, nil)
 		if err != nil {
 			return false, err
