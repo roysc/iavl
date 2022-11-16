@@ -6,6 +6,7 @@ package iavl
 import (
 	"bytes"
 	"errors"
+	"fmt"
 
 	dbm "github.com/cosmos/cosmos-db"
 )
@@ -171,14 +172,10 @@ func (t *traversal) next() (*Node, error) {
 // Iterator is a dbm.Iterator for ImmutableTree
 type Iterator struct {
 	start, end []byte
-
 	key, value []byte
-
-	valid bool
-
-	err error
-
-	t *traversal
+	valid      bool
+	err        error
+	t          *traversal
 }
 
 var _ dbm.Iterator = (*Iterator)(nil)
@@ -258,4 +255,107 @@ func (iter *Iterator) Error() error {
 // IsFast returnts true if iterator uses fast strategy
 func (iter *Iterator) IsFast() bool {
 	return false
+}
+
+type differenceIterator struct {
+	a, b dbm.Iterator
+	err  error
+}
+
+func NewDifferenceIterator(a, b dbm.Iterator) dbm.Iterator {
+	di := &differenceIterator{a: a, b: b}
+	di.seek()
+	return di
+}
+
+// Domain returns the start (inclusive) and end (exclusive) limits of the iterator.
+// CONTRACT: start, end readonly []byte
+func (di *differenceIterator) Domain() (start []byte, end []byte) {
+	return di.b.Domain()
+}
+
+// Valid returns whether the current iterator is valid. Once invalid, the Iterator remains
+// invalid forever.
+func (di *differenceIterator) Valid() bool {
+	return di.b.Valid()
+}
+
+// Next moves the iterator to the next key in the database, as defined by order of iteration.
+// If Valid returns false, this method will panic.
+func (di *differenceIterator) Next() {
+	di.b.Next()
+	di.seek()
+}
+
+// Maintains the invariant condition of the iterator, ie.
+// B points to an item not in A; to satisfy this, ensure B < A
+func (di *differenceIterator) seek() {
+	if !di.b.Valid() {
+		return
+	}
+	if !di.a.Valid() {
+		return
+	}
+
+	for {
+		switch compare(di.a, di.b) {
+		case -1: // A < B
+			// Catch A up to B
+			di.a.Next()
+			if !di.a.Valid() {
+				return
+			}
+		case 1: // B < A
+			return
+		case 0:
+			di.b.Next()
+			if !di.b.Valid() {
+				return
+			}
+		}
+	}
+}
+
+func compare(a, b dbm.Iterator) int {
+	if cmp := bytes.Compare(a.Key(), b.Key()); cmp != 0 {
+		return cmp
+	}
+	return bytes.Compare(a.Value(), b.Value())
+}
+
+// Key returns the key at the current position. Panics if the iterator is invalid.
+// CONTRACT: key readonly []byte
+func (di *differenceIterator) Key() (key []byte) {
+	return di.b.Key()
+}
+
+// Value returns the value at the current position. Panics if the iterator is invalid.
+// CONTRACT: value readonly []byte
+func (di *differenceIterator) Value() (value []byte) {
+	return di.b.Value()
+}
+
+// Error returns the last error encountered by the iterator, if any.
+func (di *differenceIterator) Error() error {
+	return di.err
+}
+
+// Close closes the iterator, relasing any allocated resources.
+func (di *differenceIterator) Close() error {
+	err := di.a.Close()
+	if err != nil {
+		err = fmt.Errorf("when closing iterator A: %w", err)
+	}
+
+	errB := di.b.Close()
+	if errB != nil {
+		errB = fmt.Errorf("when closing iterator B: %w", errB)
+		if err != nil {
+			err = fmt.Errorf("%s; %s", err, errB)
+		} else {
+			err = errB
+		}
+	}
+	di.err = err
+	return err
 }

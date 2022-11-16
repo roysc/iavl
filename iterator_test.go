@@ -6,8 +6,9 @@ import (
 	"testing"
 
 	dbm "github.com/cosmos/cosmos-db"
-	"github.com/cosmos/iavl/fastnode"
 	"github.com/stretchr/testify/require"
+
+	"github.com/cosmos/iavl/fastnode"
 )
 
 func TestIterator_NewIterator_NilTree_Failure(t *testing.T) {
@@ -159,6 +160,108 @@ func TestIterator_Basic_Full_Descending_Success(t *testing.T) {
 		ascending:      false,
 	}
 	iteratorSuccessTest(t, config)
+}
+
+func mirrorToSlice(mirror map[string]string) [][][]byte {
+	sortedMirror := make([][][]byte, 0, len(mirror))
+	for k, v := range mirror {
+		sortedMirror = append(sortedMirror, [][]byte{[]byte(k), []byte(v)})
+	}
+	sort.Slice(sortedMirror, func(i, j int) bool {
+		return string(sortedMirror[i][0]) < string(sortedMirror[j][0])
+	})
+	return sortedMirror
+}
+
+func TestDifferenceIterator_Basic(t *testing.T) {
+
+	config := &iteratorTestConfig{
+		startByteToSet: 'a',
+		endByteToSet:   'z',
+		startIterate:   nil,
+		endIterate:     nil,
+		ascending:      true,
+	}
+
+	tree, mirrorA := getRandomizedTreeAndMirror(t)
+	_, vA, err := tree.SaveVersion()
+	require.NoError(t, err)
+
+	// copy the mirror and make changes
+	mirrorB := map[string]string{}
+	for k, v := range mirrorA {
+		mirrorB[k] = v
+	}
+	randomizeTreeAndMirror(t, tree, mirrorB)
+
+	_, vB, err := tree.SaveVersion()
+	require.NoError(t, err)
+
+	// compute expected set differences
+	mirrorBMinusA := map[string]string{}
+	for k, valB := range mirrorB {
+		valA, has := mirrorA[k]
+		if !has || (valA != valB) {
+			mirrorBMinusA[k] = valB
+		}
+	}
+	sortedBMinusA := mirrorToSlice(mirrorBMinusA)
+
+	treeA, err := tree.GetImmutable(vA)
+	require.NoError(t, err)
+	itA := NewIterator(config.startIterate, config.endIterate, config.ascending, treeA)
+
+	treeB, err := tree.GetImmutable(vB)
+	require.NoError(t, err)
+	itB := NewIterator(config.startIterate, config.endIterate, config.ascending, treeB)
+
+	di := NewDifferenceIterator(itA, itB)
+	require.True(t, di.Valid())
+
+	for _, expected := range sortedBMinusA {
+		require.True(t, di.Valid())
+		require.Equal(t, []byte(expected[0]), di.Key())
+		require.Equal(t, []byte(expected[1]), di.Value())
+		di.Next()
+		require.NoError(t, di.Error())
+	}
+
+	// Rebuild A by reversing operations
+
+	di = NewDifferenceIterator(
+		NewIterator(config.startIterate, config.endIterate, config.ascending, treeA),
+		NewIterator(config.startIterate, config.endIterate, config.ascending, treeB),
+	)
+	require.True(t, di.Valid())
+
+	diAMinusB := NewDifferenceIterator(
+		NewIterator(config.startIterate, config.endIterate, config.ascending, treeB),
+		NewIterator(config.startIterate, config.endIterate, config.ascending, treeA),
+	)
+	require.True(t, diAMinusB.Valid())
+
+	for ; di.Valid(); di.Next() {
+		tree.Remove([]byte(di.Key()))
+	}
+	for ; diAMinusB.Valid(); diAMinusB.Next() {
+		tree.Set([]byte(diAMinusB.Key()), []byte(diAMinusB.Value()))
+	}
+
+	_, vC, err := tree.SaveVersion()
+	require.NoError(t, err)
+
+	itA = NewIterator(config.startIterate, config.endIterate, config.ascending, treeA)
+
+	treeC, err := tree.GetImmutable(vC)
+	require.NoError(t, err)
+	itC := NewIterator(config.startIterate, config.endIterate, config.ascending, treeC)
+
+	for ; itA.Valid(); itA.Next() {
+		require.Equal(t, itA.Key(), itC.Key())
+		require.Equal(t, itA.Value(), itC.Value())
+		itC.Next()
+	}
+	require.False(t, itC.Valid())
 }
 
 func TestIterator_WithDelete_Full_Ascending_Success(t *testing.T) {
