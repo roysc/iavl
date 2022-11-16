@@ -161,25 +161,31 @@ func getSortedMirrorKeys(mirror map[string]string) []string {
 	return sortedMirrorKeys
 }
 
+const defaultNumberOfSets = 1000
+
 func getRandomizedTreeAndMirror(t *testing.T) (*MutableTree, map[string]string) {
-	const cacheSize = 100
-
-	tree, err := getTestTree(cacheSize)
-	require.NoError(t, err)
-
-	mirror := make(map[string]string)
-
-	randomizeTreeAndMirror(t, tree, mirror)
-	return tree, mirror
+	return generateTree(t, defaultNumberOfSets)
 }
 
 func randomizeTreeAndMirror(t *testing.T, tree *MutableTree, mirror map[string]string) {
+	randomizeTreeWithSize(t, tree, mirror, defaultNumberOfSets)
+}
+
+func generateTree(t *testing.T, numberOfSets int) (*MutableTree, map[string]string) {
+	tree, err := getTestTree(100)
+	require.NoError(t, err)
+
+	mirror := map[string]string{}
+	randomizeTreeWithSize(t, tree, mirror, numberOfSets)
+	return tree, mirror
+}
+
+func randomizeTreeWithSize(t *testing.T, tree *MutableTree, mirror map[string]string, numberOfSets int) {
 	if mirror == nil {
 		mirror = make(map[string]string)
 	}
 	const keyValLength = 5
 
-	numberOfSets := 1000
 	numberOfUpdates := numberOfSets / 4
 	numberOfRemovals := numberOfSets / 4
 
