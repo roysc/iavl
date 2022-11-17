@@ -1,6 +1,7 @@
 package iavl
 
 import (
+	"bytes"
 	"math/rand"
 	"sort"
 	"testing"
@@ -174,7 +175,6 @@ func mirrorToSlice(mirror map[string]string) [][][]byte {
 }
 
 func TestDifferenceIterator_Basic(t *testing.T) {
-
 	config := &iteratorTestConfig{
 		startByteToSet: 'a',
 		endByteToSet:   'z',
@@ -207,6 +207,15 @@ func TestDifferenceIterator_Basic(t *testing.T) {
 	}
 	sortedBMinusA := mirrorToSlice(mirrorBMinusA)
 
+	mirrorAMinusB := map[string]string{}
+	for k, valA := range mirrorA {
+		_, has := mirrorB[k]
+		if !has { // skip updated keys
+			mirrorAMinusB[k] = valA
+		}
+	}
+	sortedAMinusB := mirrorToSlice(mirrorAMinusB)
+
 	treeA, err := tree.GetImmutable(vA)
 	require.NoError(t, err)
 	itA := NewIterator(config.startIterate, config.endIterate, config.ascending, treeA)
@@ -218,33 +227,38 @@ func TestDifferenceIterator_Basic(t *testing.T) {
 	di := NewDifferenceIterator(itA, itB)
 	require.True(t, di.Valid())
 
-	for _, expected := range sortedBMinusA {
-		require.True(t, di.Valid())
+	iOnlyA, iOnlyB := 0, 0
+	for di.Valid() {
+		var expected [][]byte
+		if di.Value() != nil {
+			expected = sortedBMinusA[iOnlyB]
+			iOnlyB++
+			require.Equal(t, []byte(expected[1]), di.Value())
+		} else {
+			expected = sortedAMinusB[iOnlyA]
+			iOnlyA++
+		}
 		require.Equal(t, []byte(expected[0]), di.Key())
-		require.Equal(t, []byte(expected[1]), di.Value())
 		di.Next()
 		require.NoError(t, di.Error())
 	}
+	require.Equal(t, iOnlyA, len(sortedAMinusB))
+	require.Equal(t, iOnlyB, len(sortedBMinusA))
 
 	// Rebuild A by reversing operations
 
 	di = NewDifferenceIterator(
-		NewIterator(config.startIterate, config.endIterate, config.ascending, treeA),
 		NewIterator(config.startIterate, config.endIterate, config.ascending, treeB),
+		NewIterator(config.startIterate, config.endIterate, config.ascending, treeA),
 	)
 	require.True(t, di.Valid())
 
-	diAMinusB := NewDifferenceIterator(
-		NewIterator(config.startIterate, config.endIterate, config.ascending, treeB),
-		NewIterator(config.startIterate, config.endIterate, config.ascending, treeA),
-	)
-	require.True(t, diAMinusB.Valid())
-
 	for ; di.Valid(); di.Next() {
-		tree.Remove([]byte(di.Key()))
-	}
-	for ; diAMinusB.Valid(); diAMinusB.Next() {
-		tree.Set([]byte(diAMinusB.Key()), []byte(diAMinusB.Value()))
+		if di.Value() != nil {
+			tree.Set(di.Key(), di.Value())
+		} else {
+			tree.Remove(di.Key())
+		}
 	}
 
 	_, vC, err := tree.SaveVersion()
@@ -256,10 +270,17 @@ func TestDifferenceIterator_Basic(t *testing.T) {
 	require.NoError(t, err)
 	itC := NewIterator(config.startIterate, config.endIterate, config.ascending, treeC)
 
+	i := 0
+
 	for ; itA.Valid(); itA.Next() {
+		if !bytes.Equal(itA.Key(), itC.Key()) {
+			_ = i
+		}
 		require.Equal(t, itA.Key(), itC.Key())
 		require.Equal(t, itA.Value(), itC.Value())
 		itC.Next()
+		i++
+
 	}
 	require.False(t, itC.Valid())
 }

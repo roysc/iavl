@@ -258,10 +258,15 @@ func (iter *Iterator) IsFast() bool {
 }
 
 type differenceIterator struct {
-	a, b dbm.Iterator
-	err  error
+	a, b   dbm.Iterator
+	yieldA bool
+	err    error
 }
 
+// NewDifferenceIterator returns an iterator over the exclusive-or of two iterators, i.e.
+// items that differ between the two.
+// Items from iterator A are yielded with Value() == nil
+// Updates (items with matching Key()) are yielded once, with Value() == B.Value()
 func NewDifferenceIterator(a, b dbm.Iterator) dbm.Iterator {
 	di := &differenceIterator{a: a, b: b}
 	di.seek()
@@ -271,67 +276,91 @@ func NewDifferenceIterator(a, b dbm.Iterator) dbm.Iterator {
 // Domain returns the start (inclusive) and end (exclusive) limits of the iterator.
 // CONTRACT: start, end readonly []byte
 func (di *differenceIterator) Domain() (start []byte, end []byte) {
-	return di.b.Domain()
+	// return di.b.Domain()
+	startA, endA := di.a.Domain()
+	startB, endB := di.b.Domain()
+	// find the maximum domain
+	switch bytes.Compare(startA, startB) {
+	case 1:
+		start = startB
+	default:
+		start = startA
+	}
+	switch bytes.Compare(endA, endB) {
+	case 1:
+		end = endA
+	default:
+		end = endB
+	}
+	return
 }
 
 // Valid returns whether the current iterator is valid. Once invalid, the Iterator remains
 // invalid forever.
 func (di *differenceIterator) Valid() bool {
-	return di.b.Valid()
+	return di.a.Valid() || di.b.Valid()
 }
 
 // Next moves the iterator to the next key in the database, as defined by order of iteration.
 // If Valid returns false, this method will panic.
 func (di *differenceIterator) Next() {
-	di.b.Next()
+	if di.yieldA {
+		di.a.Next()
+	} else {
+		di.b.Next()
+	}
 	di.seek()
 }
 
-// Maintains the invariant condition of the iterator, ie.
-// B points to an item not in A; to satisfy this, ensure B < A
+// Maintains the invariant condition of the iterator, ie. both member iterators
+// point to an item not in the other set.
 func (di *differenceIterator) seek() {
-	if !di.b.Valid() {
-		return
-	}
-	if !di.a.Valid() {
-		return
-	}
-
 	for {
-		switch compare(di.a, di.b) {
+		if !di.b.Valid() {
+			di.yieldA = true
+			return
+		}
+		if !di.a.Valid() {
+			di.yieldA = false
+			return
+		}
+
+		switch bytes.Compare(di.a.Key(), di.b.Key()) {
 		case -1: // A < B
-			// Catch A up to B
-			di.a.Next()
-			if !di.a.Valid() {
-				return
+			if di.a.Valid() {
+				di.yieldA = true
 			}
+			return
 		case 1: // B < A
+			if di.b.Valid() {
+				di.yieldA = false
+			}
 			return
 		case 0:
-			di.b.Next()
-			if !di.b.Valid() {
-				return
+			if bytes.Equal(di.a.Value(), di.b.Value()) {
+				di.b.Next()
 			}
+			di.a.Next()
 		}
 	}
-}
-
-func compare(a, b dbm.Iterator) int {
-	if cmp := bytes.Compare(a.Key(), b.Key()); cmp != 0 {
-		return cmp
-	}
-	return bytes.Compare(a.Value(), b.Value())
 }
 
 // Key returns the key at the current position. Panics if the iterator is invalid.
 // CONTRACT: key readonly []byte
 func (di *differenceIterator) Key() (key []byte) {
+	if di.yieldA {
+		return di.a.Key()
+	}
 	return di.b.Key()
 }
 
 // Value returns the value at the current position. Panics if the iterator is invalid.
+// If the item is present only in A, this returns nil.
 // CONTRACT: value readonly []byte
 func (di *differenceIterator) Value() (value []byte) {
+	if di.yieldA {
+		return nil
+	}
 	return di.b.Value()
 }
 
