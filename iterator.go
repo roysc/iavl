@@ -120,35 +120,21 @@ func (t *traversal) next() (*Node, error) {
 	if !node.isLeaf() {
 		// if node is a branch node and the order is ascending,
 		// We traverse through the left subtree, then the right subtree.
-		if t.ascending {
-			if beforeEnd {
-				// push the delayed traversal for the right nodes,
-				rightNode, err := node.getRightNode(t.tree)
-				if err != nil {
-					return nil, err
-				}
-				t.delayedNodes.push(rightNode, true)
+		// if node is a branch node and the order is not ascending
+		// We traverse through the right subtree, then the left subtree.
+		for i := 0; i < 2; i++ {
+			childI := i
+			if t.ascending {
+				childI = 1 - childI
 			}
-			if afterStart {
+			if childI == 0 && afterStart {
 				// push the delayed traversal for the left nodes,
 				leftNode, err := node.getLeftNode(t.tree)
 				if err != nil {
 					return nil, err
 				}
 				t.delayedNodes.push(leftNode, true)
-			}
-		} else {
-			// if node is a branch node and the order is not ascending
-			// We traverse through the right subtree, then the left subtree.
-			if afterStart {
-				// push the delayed traversal for the left nodes,
-				leftNode, err := node.getLeftNode(t.tree)
-				if err != nil {
-					return nil, err
-				}
-				t.delayedNodes.push(leftNode, true)
-			}
-			if beforeEnd {
+			} else if childI == 1 && beforeEnd {
 				// push the delayed traversal for the right nodes,
 				rightNode, err := node.getRightNode(t.tree)
 				if err != nil {
