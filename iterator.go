@@ -11,6 +11,13 @@ import (
 	dbm "github.com/cosmos/cosmos-db"
 )
 
+type PathIterator interface {
+	dbm.Iterator
+
+	// Path returns the path of this node within the tree, as a bit string and length in bits.
+	Path() []bool
+}
+
 type traversal struct {
 	tree         *ImmutableTree
 	start, end   []byte        // iteration domain
@@ -30,9 +37,11 @@ func (node *Node) newTraversal(tree *ImmutableTree, start, end []byte, ascending
 		ascending:    ascending,
 		inclusive:    inclusive,
 		post:         post,
-		delayedNodes: &delayedNodes{{node, true}}, // set initial traverse to the node
+		delayedNodes: &delayedNodes{{node, true, nil}}, // set initial traverse to the node
 	}
 }
+
+type nodePath []bool
 
 // delayedNode represents the delayed iteration on the nodes.
 // When delayed is set to true, the delayedNode should be expanded, and their
@@ -41,22 +50,29 @@ func (node *Node) newTraversal(tree *ImmutableTree, start, end []byte, ascending
 type delayedNode struct {
 	node    *Node
 	delayed bool
+	path    nodePath
 }
 
 type delayedNodes []delayedNode
 
-func (nodes *delayedNodes) pop() (*Node, bool) {
+func (nodes *delayedNodes) pop() delayedNode {
 	node := (*nodes)[len(*nodes)-1]
 	*nodes = (*nodes)[:len(*nodes)-1]
-	return node.node, node.delayed
+	return node
 }
 
-func (nodes *delayedNodes) push(node *Node, delayed bool) {
-	*nodes = append(*nodes, delayedNode{node, delayed})
+func (nodes *delayedNodes) push(node delayedNode) {
+	*nodes = append(*nodes, node)
 }
 
 func (nodes *delayedNodes) length() int {
 	return len(*nodes)
+}
+
+func copyPath(p nodePath) (ret nodePath) {
+	ret = make(nodePath, len(p))
+	copy(ret, p)
+	return ret
 }
 
 // `traversal` returns the delayed execution of recursive traversal on a tree.
@@ -90,17 +106,18 @@ func (nodes *delayedNodes) length() int {
 //  1. If the traversal is postorder, the current node will be append to the `delayedNodes` with `delayed`
 //     set to false, and immediately returned at the subsequent call of `traversal.next()` at the last line.
 //  2. If the traversal is preorder, the current node will be returned.
-func (t *traversal) next() (*Node, error) {
+func (t *traversal) next() (node *Node, path []bool, err error) {
 	// End of traversal.
 	if t.delayedNodes.length() == 0 {
-		return nil, nil
+		return
 	}
 
-	node, delayed := t.delayedNodes.pop()
+	d := t.delayedNodes.pop()
+	node, delayed, path := d.node, d.delayed, d.path
 
 	// Already expanded, immediately return.
 	if !delayed || node == nil {
-		return node, nil
+		return
 	}
 
 	afterStart := t.start == nil || bytes.Compare(t.start, node.key) < 0
@@ -113,7 +130,7 @@ func (t *traversal) next() (*Node, error) {
 	// case of postorder. A-1 and B-1
 	// Recursively process left sub-tree, then right-subtree, then node itself.
 	if t.post && (!node.isLeaf() || (startOrAfter && beforeEnd)) {
-		t.delayedNodes.push(node, false)
+		t.delayedNodes.push(delayedNode{node, false, d.path})
 	}
 
 	// case of branch node, traversing children. A-2.
@@ -131,16 +148,16 @@ func (t *traversal) next() (*Node, error) {
 				// push the delayed traversal for the left nodes,
 				leftNode, err := node.getLeftNode(t.tree)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				t.delayedNodes.push(leftNode, true)
+				t.delayedNodes.push(delayedNode{leftNode, true, append(copyPath(d.path), false)})
 			} else if childI == 1 && beforeEnd {
 				// push the delayed traversal for the right nodes,
 				rightNode, err := node.getRightNode(t.tree)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				t.delayedNodes.push(rightNode, true)
+				t.delayedNodes.push(delayedNode{rightNode, true, append(copyPath(d.path), true)})
 			}
 		}
 	}
@@ -148,7 +165,7 @@ func (t *traversal) next() (*Node, error) {
 	// case of preorder traversal. A-3 and B-2.
 	// Process root then (recursively) processing left child, then process right child
 	if !t.post && (!node.isLeaf() || (startOrAfter && beforeEnd)) {
-		return node, nil
+		return
 	}
 
 	// Keep traversing and expanding the remaning delayed nodes. A-4.
@@ -159,6 +176,7 @@ func (t *traversal) next() (*Node, error) {
 type Iterator struct {
 	start, end []byte
 	key, value []byte
+	path       nodePath
 	valid      bool
 	err        error
 	t          *traversal
@@ -167,7 +185,7 @@ type Iterator struct {
 var _ dbm.Iterator = (*Iterator)(nil)
 
 // Returns a new iterator over the immutable tree. If the tree is nil, the iterator will be invalid.
-func NewIterator(start, end []byte, ascending bool, tree *ImmutableTree) dbm.Iterator {
+func NewIterator(start, end []byte, ascending bool, tree *ImmutableTree) *Iterator {
 	iter := &Iterator{
 		start: start,
 		end:   end,
@@ -199,6 +217,11 @@ func (iter *Iterator) Key() []byte {
 	return iter.key
 }
 
+// Path implements PathIterator
+func (iter *Iterator) Path() []bool {
+	return iter.path
+}
+
 // Value implements dbm.Iterator
 func (iter *Iterator) Value() []byte {
 	return iter.value
@@ -210,7 +233,7 @@ func (iter *Iterator) Next() {
 		return
 	}
 
-	node, err := iter.t.next()
+	node, path, err := iter.t.next()
 	// TODO: double-check if this error is correctly handled.
 	if node == nil || err != nil {
 		iter.t = nil
@@ -220,6 +243,7 @@ func (iter *Iterator) Next() {
 
 	if node.subtreeHeight == 0 {
 		iter.key, iter.value = node.key, node.value
+		iter.path = path
 		return
 	}
 
@@ -241,6 +265,12 @@ func (iter *Iterator) Error() error {
 // IsFast returnts true if iterator uses fast strategy
 func (iter *Iterator) IsFast() bool {
 	return false
+}
+
+var _ PathIterator = (*Iterator)(nil)
+
+func NewPathIterator(start, end []byte, ascending bool, tree *ImmutableTree) PathIterator {
+	return NewIterator(start, end, ascending, tree)
 }
 
 type differenceIterator struct {

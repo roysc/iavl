@@ -201,7 +201,7 @@ func TestDifferenceIterator_Basic(t *testing.T) {
 	mirrorBMinusA := map[string]string{}
 	for k, valB := range mirrorB {
 		valA, has := mirrorA[k]
-		if !has || (valA != valB) {
+		if !has || (valA != valB) { // include updated keys
 			mirrorBMinusA[k] = valB
 		}
 	}
@@ -270,9 +270,7 @@ func TestDifferenceIterator_Basic(t *testing.T) {
 	require.NoError(t, err)
 	itC := NewIterator(config.startIterate, config.endIterate, config.ascending, treeC)
 
-	i := 0
-
-	for ; itA.Valid(); itA.Next() {
+	for i := 0; itA.Valid(); itA.Next() {
 		if !bytes.Equal(itA.Key(), itC.Key()) {
 			_ = i
 		}
@@ -283,6 +281,64 @@ func TestDifferenceIterator_Basic(t *testing.T) {
 
 	}
 	require.False(t, itC.Valid())
+}
+
+func TestPathIterator(t *testing.T) {
+	config := &iteratorTestConfig{
+		startByteToSet: 'a',
+		endByteToSet:   'z',
+		startIterate:   nil,
+		endIterate:     nil,
+		ascending:      false,
+	}
+
+	tree, _ := getRandomizedTreeAndMirror(t)
+	_, version, err := tree.SaveVersion()
+	require.NoError(t, err)
+	immutableTree, err := tree.GetImmutable(version)
+	require.NoError(t, err)
+
+	it := NewPathIterator(config.startIterate, config.endIterate, config.ascending, immutableTree)
+
+	// Reconstruct the tree from the iterated paths
+	var root *Node
+	var cur **Node
+	for ; it.Valid(); it.Next() {
+		// Descend this node's path, building nodes on the way
+		cur = &root
+		if *cur == nil {
+			*cur = NewNode(nil, nil, version)
+		}
+		ancs := []*Node{}
+		for _, childI := range it.Path() {
+			ancs = append(ancs, *cur)
+			if !childI {
+				cur = &(*cur).leftNode
+			} else {
+				cur = &(*cur).rightNode
+			}
+			if *cur == nil {
+				*cur = NewNode(nil, nil, version)
+			}
+		}
+
+		(*cur).key = it.Key()
+		(*cur).value = it.Value()
+
+		// Update ancestor nodes while reascending
+		for len(ancs) > 0 {
+			var anc *Node
+			ancs, anc = ancs[:len(ancs)-1], ancs[len(ancs)-1]
+			anc.calcHeightAndSize(immutableTree)
+		}
+	}
+
+	// Verify the trees are equivalent
+	expected, err := immutableTree.Hash()
+	require.NoError(t, err)
+	actual, _, err := root.hashWithCount()
+	require.NoError(t, err)
+	require.Equal(t, expected, actual)
 }
 
 func TestIterator_WithDelete_Full_Ascending_Success(t *testing.T) {
