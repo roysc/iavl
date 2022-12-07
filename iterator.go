@@ -274,16 +274,19 @@ func NewPathIterator(start, end []byte, ascending bool, tree *ImmutableTree) Pat
 }
 
 type differenceIterator struct {
-	a, b   dbm.Iterator
+	a, b   PathIterator
 	yieldA bool
 	err    error
 }
+
+var _ PathIterator = (*differenceIterator)(nil)
+var _ dbm.Iterator = (*differenceIterator)(nil)
 
 // NewDifferenceIterator returns an iterator over the exclusive-or of two iterators, i.e.
 // items that differ between the two.
 // Items from iterator A are yielded with Value() == nil
 // Updates (items with matching Key()) are yielded once, with Value() == B.Value()
-func NewDifferenceIterator(a, b dbm.Iterator) dbm.Iterator {
+func NewDifferenceIterator(a, b PathIterator) dbm.Iterator {
 	di := &differenceIterator{a: a, b: b}
 	di.seek()
 	return di
@@ -359,6 +362,13 @@ func (di *differenceIterator) seek() {
 			di.a.Next()
 		}
 	}
+}
+
+func (di *differenceIterator) Path() []bool {
+	if di.yieldA {
+		return di.a.Path()
+	}
+	return di.b.Path()
 }
 
 // Key returns the key at the current position. Panics if the iterator is invalid.
