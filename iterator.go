@@ -295,21 +295,18 @@ func NewDifferenceIterator(a, b PathIterator) dbm.Iterator {
 // Domain returns the start (inclusive) and end (exclusive) limits of the iterator.
 // CONTRACT: start, end readonly []byte
 func (di *differenceIterator) Domain() (start []byte, end []byte) {
-	// return di.b.Domain()
 	startA, endA := di.a.Domain()
 	startB, endB := di.b.Domain()
 	// find the maximum domain
-	switch bytes.Compare(startA, startB) {
-	case 1:
-		start = startB
-	default:
+	if bytes.Compare(startA, startB) < 0 {
 		start = startA
+	} else {
+		start = startB
 	}
-	switch bytes.Compare(endA, endB) {
-	case 1:
-		end = endA
-	default:
+	if bytes.Compare(endA, endB) < 0 {
 		end = endB
+	} else {
+		end = endA
 	}
 	return
 }
@@ -346,14 +343,10 @@ func (di *differenceIterator) seek() {
 
 		switch bytes.Compare(di.a.Key(), di.b.Key()) {
 		case -1: // A < B
-			if di.a.Valid() {
-				di.yieldA = true
-			}
+			di.yieldA = true
 			return
 		case 1: // B < A
-			if di.b.Valid() {
-				di.yieldA = false
-			}
+			di.yieldA = false
 			return
 		case 0:
 			if bytes.Equal(di.a.Value(), di.b.Value()) {
@@ -399,12 +392,12 @@ func (di *differenceIterator) Error() error {
 func (di *differenceIterator) Close() error {
 	err := di.a.Close()
 	if err != nil {
-		err = fmt.Errorf("when closing iterator A: %w", err)
+		err = fmt.Errorf("error closing iterator A: %w", err)
 	}
 
 	errB := di.b.Close()
 	if errB != nil {
-		errB = fmt.Errorf("when closing iterator B: %w", errB)
+		errB = fmt.Errorf("error closing iterator B: %w", errB)
 		if err != nil {
 			err = fmt.Errorf("%s; %s", err, errB)
 		} else {
